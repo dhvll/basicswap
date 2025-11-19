@@ -102,6 +102,70 @@ class FIROInterface(BTCInterface):
             return addr_info["ismine"]
         return addr_info["ismine"] or addr_info["iswatchonly"]
 
+    def getNewSparkAddress(self, label="swap_receive") -> str:
+        """Generate a new Spark address for receiving private funds.
+        RPC: getnewsparkaddress [label]
+        """
+        try:
+            return self.rpc("getnewsparkaddress", [label])
+        except Exception as e:
+            self._log.error(f"getnewsparkaddress failed: {str(e)}")
+            raise
+
+    def getNewStealthAddress(self, label=""):
+        """Get a new Spark address (alias for consistency with other coins)."""
+        return self.getNewSparkAddress(label)
+
+    def getWalletInfo(self):
+        """Get wallet info including Spark balance."""
+        rv = super(FIROInterface, self).getWalletInfo()
+        try:
+            spark_balance_info = self.rpc("getsparkbalance")
+            # getsparkbalance returns a dict with confirmed, unconfirmed, immature
+            # Values are in FIRO (not satoshis), similar to getwalletinfo balance
+            rv["spark_balance"] = spark_balance_info.get("confirmed", 0)
+            rv["spark_unconfirmed"] = spark_balance_info.get("unconfirmed", 0)
+            rv["spark_immature"] = spark_balance_info.get("immature", 0)
+        except Exception as e:
+            self._log.warning(f"getsparkbalance failed: {str(e)}")
+            rv["spark_balance"] = 0
+            rv["spark_unconfirmed"] = 0
+            rv["spark_immature"] = 0
+        return rv
+
+    def withdrawCoin(self, value, type_from: str, addr_to: str, subfee: bool) -> str:
+        """Withdraw coins, supporting both transparent and Spark transactions.
+        
+        Args:
+            value: Amount to withdraw
+            type_from: "plain" for transparent, "spark" for Spark
+            addr_to: Destination address
+            subfee: Whether to subtract fee from amount
+        """
+        if type_from == "spark":
+            # Use spendspark RPC for Spark transactions
+            # RPC: spendspark {"address": {"amount": ..., "subtractfee": ..., "memo": ...}}
+            try:
+                params = {
+                    addr_to: {
+                        "amount": value,
+                        "subtractfee": subfee,
+                        "memo": ""
+                    }
+                }
+                result = self.rpc("spendspark", params)
+                # spendspark returns a txid string directly or in a result dict
+                if isinstance(result, dict):
+                    return result.get("txid", result.get("tx", ""))
+                return result
+            except Exception as e:
+                self._log.error(f"spendspark failed: {str(e)}")
+                raise
+        else:
+            # Use standard sendtoaddress for transparent transactions
+            params = [addr_to, value, "", "", subfee]
+            return self.rpc("sendtoaddress", params)
+
     def getSCLockScriptAddress(self, lock_script: bytes) -> str:
         lock_tx_dest = self.getScriptDest(lock_script)
         address = self.encodeScriptDest(lock_tx_dest)
